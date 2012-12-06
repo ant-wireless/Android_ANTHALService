@@ -17,7 +17,7 @@
  limitations under the License.
 -->
 <resources>
-    <string name="app_name">ANT HAL Service - DSI BlueZ</string>
+    <string name="app_name">ANT HAL Service</string>
     
 <!-- Permissions -->
     <!-- Permission description for com.dsi.ant.permission.ANTRADIO -->

@@ -18,11 +18,19 @@
 
 package com.dsi.ant.server;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.IBluetooth;
+import android.bluetooth.IBluetoothStateChangeCallback;
 import android.content.Context;
 import android.content.Intent;
 import android.app.Service;
 import android.os.IBinder;
 import android.os.RemoteException;
+import android.os.ServiceManager;
+import android.server.BluetoothService;
 import android.util.Log;
 
 import com.dsi.ant.core.*;
@@ -44,50 +52,259 @@ public class AntService extends Service
 
     private boolean mInitialized = false;
 
+    private Object mChangeAntPowerState_LOCK = new Object();
     private static Object sAntHalServiceDestroy_LOCK = new Object();
 
     IAntHalCallback mCallback;
+
+    private BluetoothService mBluetoothService;
+
+    /** We requested an ANT enable in the BT service, and are waiting for it to complete */
+    private boolean mBluetoothServiceAntEnabling;
+    /** We requested an ANT disable in the BT service, and are waiting for it to complete */
+    private boolean mBluetoothServiceAntDisabling;
 
     public static boolean startService(Context context)
     {
         return ( null != context.startService(new Intent(IAntHal.class.getName())) );
     }
 
+    /**
+     * Calls back the registered callback with the change to the new state 
+     * @param state the {@link AntHalDefine} state
+     */
     private void setState(int state)
     {
-        if(DEBUG) Log.i(TAG, "Setting ANT State = "+ state +" / "+ AntHalDefine.getAntHalStateString(state));
+        synchronized(mChangeAntPowerState_LOCK) {
+            if(DEBUG) Log.i(TAG, "Setting ANT State = "+ state +" / "+ AntHalDefine.getAntHalStateString(state));
 
-        if (mCallback != null)
-        {
-            try
+            if (mCallback != null)
             {
-                if(DEBUG) Log.d(TAG, "Calling status changed callback "+ mCallback.toString());
+                try
+                {
+                    if(DEBUG) Log.d(TAG, "Calling status changed callback "+ mCallback.toString());
 
-                mCallback.antHalStateChanged(state);
+                    mCallback.antHalStateChanged(state);
+                }
+                catch (RemoteException e)
+                {
+                    // Don't do anything as this is a problem in the application
+
+                    if(DEBUG) Log.e(TAG, "ANT HAL State Changed callback failure in application", e);
+                }
             }
-            catch (RemoteException e)
+            else
             {
-                // Don't do anything as this is a problem in the application
-
-                if(DEBUG) Log.e(TAG, "ANT HAL State Changed callback failure in application", e);
+                if(DEBUG) Log.d(TAG, "Calling status changed callback is null");
             }
-        }
-        else
-        {
-            if(DEBUG) Log.d(TAG, "Calling status changed callback is null");
         }
     }
 
+    /**
+     * Requests to change the state
+     * @param state The desired state to change to
+     * @return An {@link AntHalDefine} result
+     */
+    private int doSetAntState(int state)
+    {
+        synchronized(mChangeAntPowerState_LOCK) {
+            int result = AntHalDefine.ANT_HAL_RESULT_FAIL_INVALID_REQUEST;
+
+            switch(state)
+            {
+                case AntHalDefine.ANT_HAL_STATE_ENABLED:
+                {
+                    result = asyncSetAntPowerState(true);
+                    break;
+                }
+                case AntHalDefine.ANT_HAL_STATE_DISABLED:
+                {
+                    result = asyncSetAntPowerState(false);
+                    break;
+                }
+                case AntHalDefine.ANT_HAL_STATE_RESET:
+                {
+                    result = doHardReset();
+                    break;
+                }
+            }
+            
+            return result;
+        }
+    }
+
+    /**
+     * Queries the native code for state
+     * @return An {@link AntHalDefine} state
+     */
     private int doGetAntState()
     {
         if(DEBUG) Log.v(TAG, "doGetAntState start");
 
-        int retState = mJAnt.getRadioEnabledStatus();
+        int retState;
+        if (mBluetoothServiceAntEnabling)
+        {
+            if(DEBUG) Log.d(TAG, "Bluetooth Service ANT Enabling");
+            
+            retState = AntHalDefine.ANT_HAL_STATE_ENABLING;
+        }
+        else if(mBluetoothServiceAntDisabling)
+        {
+            if(DEBUG) Log.d(TAG, "Bluetooth Service ANT Disabling");
+            
+            retState = AntHalDefine.ANT_HAL_STATE_DISABLING;
+        }
+        else
+        {
+            retState = mJAnt.getRadioEnabledStatus(); // ANT state is native state
+        }
+        
         if(DEBUG) Log.i(TAG, "Get ANT State = "+ retState +" / "+ AntHalDefine.getAntHalStateString(retState));
 
         return retState;
     }
 
+    /**
+     * The callback that the BluetoothAdapterStateMachine will call back on when power is on / off.
+     * When called back, this function will call the native enable() or disable()
+     */
+    private final IBluetoothStateChangeCallback.Stub mBluetoothStateChangeCallback = new IBluetoothStateChangeCallback.Stub()
+    {
+        @Override
+        public void onBluetoothStateChange(boolean on) throws RemoteException
+        {
+            synchronized(mChangeAntPowerState_LOCK) {
+                if (DEBUG) Log.i(TAG, "bluetooth state change callback: " + on);
+
+                if (on) {
+                    mBluetoothServiceAntEnabling = false;
+                    
+                    if (enableBlocking() == AntHalDefine.ANT_HAL_RESULT_SUCCESS) {
+                        if(DEBUG) Log.v(TAG, "ANT native enable: Success");
+                        setState(AntHalDefine.ANT_HAL_STATE_ENABLED);
+                    } else {
+                        Log.e(TAG, "ANT native enable failed");
+                        setState(AntHalDefine.ANT_HAL_STATE_DISABLED);
+                    }
+                } else {
+                    mBluetoothServiceAntDisabling = false;
+                    
+                    if (disableBlocking() == AntHalDefine.ANT_HAL_RESULT_SUCCESS) {
+                        if(DEBUG) Log.v(TAG, "ANT native disable: Success");
+                        setState(AntHalDefine.ANT_HAL_STATE_DISABLED);
+                    } else {
+                        Log.e(TAG, "ANT native disable failed");
+                        setState(doGetAntState());
+                    }
+                }
+            }
+        }
+    };
+
+    /**
+     * Perform a power change if required.
+     * Tries to use changeAntWirelessState() in {@link BluetoothService}. If it does not exist then
+     * it defaults to a native enable() or disable() call
+     * @param state true for enable, false for disable
+     * @return {@link AntHalDefine#ANT_HAL_RESULT_SUCCESS} when the request is successfully sent,
+     * false otherwise
+     */
+    private int asyncSetAntPowerState(final boolean state)
+    {
+        synchronized(mChangeAntPowerState_LOCK) {
+            // Check we are not already in/transitioning to the state we want
+            int currentState = doGetAntState();
+            boolean doNativePower = false;
+
+            if(state) {
+                if((AntHalDefine.ANT_HAL_STATE_ENABLED == currentState)
+                        || (AntHalDefine.ANT_HAL_STATE_ENABLING == currentState)) {
+                    if(DEBUG) Log.d(TAG, "Enable request ignored as already enabled/enabling");
+
+                    return AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+                } else if(AntHalDefine.ANT_HAL_STATE_DISABLING == currentState) {
+                    Log.w(TAG, "Enable request ignored as already disabling");
+
+                    return AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
+                }
+            } else {
+                if((AntHalDefine.ANT_HAL_STATE_DISABLED == currentState)
+                        || (AntHalDefine.ANT_HAL_STATE_DISABLING == currentState)) {
+                    if(DEBUG)Log.d(TAG, "Disable request ignored as already disabled/disabling");
+
+                    return AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+                } else if(AntHalDefine.ANT_HAL_STATE_ENABLING == currentState) {
+                    Log.w(TAG, "Disable request ignored as already enabling");
+
+                    return AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
+                }
+            }
+
+            if (mBluetoothService != null) {
+                try {
+                    Method method_changeAntWirelessState = BluetoothService.class.getMethod(
+                            "changeAntWirelessState", boolean.class, 
+                            IBluetoothStateChangeCallback.class);
+
+                    boolean result = (Boolean) method_changeAntWirelessState.invoke(mBluetoothService, 
+                            state, mBluetoothStateChangeCallback);
+                    if (result) {
+                        if (state) {
+                            if (DEBUG) Log.d(TAG, "enable request successful");
+                            mBluetoothServiceAntEnabling = true;
+                            setState(AntHalDefine.ANT_HAL_STATE_ENABLING);
+                        } else {
+                            if (DEBUG) Log.d(TAG, "disable request successful");
+                            mBluetoothServiceAntDisabling = true;
+                            setState(AntHalDefine.ANT_HAL_STATE_DISABLING);
+                        }
+                        return AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+                    } else {
+                        Log.e(TAG, "power " + state + " request failed");
+                        return AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
+                    }
+                } catch (NoSuchMethodException e) {
+                    // BluetoothService does not contain the ANT frameworks power function, which means
+                    // the native code will do the chip power.
+                    doNativePower = true;
+                } catch (IllegalAccessException e) {
+                    // This exception should never happen, but if it does it is something we need to fix.
+                    // This call is made on a Binder Thread, so rather than crash it and have it silently
+                    // fail, we re-throw a supported IPC exception so that the higher level will know
+                    // about the error.
+                    throw new SecurityException("BluetoothService.changeAntWirelessState() function should be public\n" + e.getMessage());
+                } catch (InvocationTargetException e) {
+                    // This exception should never happen, but if it does it is something we need to fix.
+                    // This call is made on a Binder Thread, so rather than crash it and have it silently
+                    // fail, we re-throw a supported IPC exception so that the higher level will know
+                    // about the error.
+                    throw new IllegalArgumentException("BluetoothService.changeAntWirelessState() should not throw exceptions\n" + e.getMessage());
+                }
+            }
+            else
+            {
+                Log.w(TAG, "in disable: No BluetoothService");
+                doNativePower = true;
+            }
+            
+            if(doNativePower) {
+                if (state) {
+                    enableBackground();
+                } else {
+                    disableBackground();
+                }
+                return AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+            }
+
+            return AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
+        }
+    }
+
+    /**
+     * Calls enable on the native libantradio.so
+     * @return {@link AntHalDefine#ANT_HAL_RESULT_SUCCESS} when successful, or
+     * {@link AntHalDefine#ANT_HAL_RESULT_FAIL_UNKNOWN} if unsuccessful
+     */
     private int enableBlocking()
     {
         int ret = AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
@@ -97,18 +314,23 @@ public class AntService extends Service
             {
                 if(JAntStatus.SUCCESS == mJAnt.enable())
                 {
-                    if(DEBUG) Log.v(TAG, "Enable callback end: Success");
+                    if(DEBUG) Log.v(TAG, "Enable call: Success");
                     ret = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
                 }
                 else
                 {
-                    if(DEBUG) Log.v(TAG, "Enable callback end: Failure");
+                    if(DEBUG) Log.v(TAG, "Enable call: Failure");
                 }
             }
         }
         return ret;
     }
 
+    /**
+     * Calls disable on the native libantradio.so
+     * @return {@link AntHalDefine#ANT_HAL_RESULT_SUCCESS} when successful, or
+     * {@link AntHalDefine#ANT_HAL_RESULT_FAIL_UNKNOWN} if unsuccessful
+     */
     private int disableBlocking()
     {
         int ret = AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
@@ -130,12 +352,16 @@ public class AntService extends Service
         return ret;
     }
 
+    /**
+     * Post an enable runnable.
+     */
     private int enableBackground()
     {
         if(DEBUG) Log.v(TAG, "Enable start");
 
         if (DEBUG) Log.d(TAG, "Enable: enabling the radio");
 
+        // TODO use handler to post runnable rather than creating a new thread.
         new Thread(new Runnable() {
             public void run() {
                 enableBlocking();
@@ -146,10 +372,14 @@ public class AntService extends Service
         return AntHalDefine.ANT_HAL_RESULT_SUCCESS;
     }
 
+    /**
+     * Post a disable runnable.
+     */
     private int disableBackground()
     {
         if(DEBUG) Log.v(TAG, "Disable start");
 
+        // TODO use handler to post runnable rather than creating a new thread.
         new Thread(new Runnable() {
             public void run() {
                 disableBlocking();
@@ -266,28 +496,7 @@ public class AntService extends Service
     {
         public int setAntState(int state)
         {
-            int result = AntHalDefine.ANT_HAL_RESULT_FAIL_INVALID_REQUEST;
-
-            switch(state)
-            {
-                case AntHalDefine.ANT_HAL_STATE_ENABLED:
-                {
-                    result = enableBackground();
-                    break;
-                }
-                case AntHalDefine.ANT_HAL_STATE_DISABLED:
-                {
-                    result = disableBackground();
-                    break;
-                }
-                case AntHalDefine.ANT_HAL_STATE_RESET:
-                {
-                    result = doHardReset();
-                    break;
-                }
-            }
-
-            return result;
+            return doSetAntState(state);
         }
 
         public int getAntState()
@@ -331,6 +540,9 @@ public class AntService extends Service
 
         super.onCreate();
 
+        mBluetoothServiceAntEnabling = false;
+        mBluetoothServiceAntDisabling = false;
+        
         if(null != mJAnt)
         {
             // This somehow happens when quickly starting/stopping an application.
@@ -342,9 +554,19 @@ public class AntService extends Service
 
         if (createResult == JAntStatus.SUCCESS)
         {
-            mInitialized = true;
+            mBluetoothService = (BluetoothService) IBluetooth.Stub.asInterface(ServiceManager.getService(BluetoothAdapter.BLUETOOTH_SERVICE));
 
-            if (DEBUG) Log.d(TAG, "JAntJava create success");
+            if (mBluetoothService == null)
+            {
+                Log.e(TAG, "mBluetoothService == null");
+                mInitialized = false;
+            }
+            else
+            {
+                mInitialized = true;
+
+                if (DEBUG) Log.d(TAG, "JAntJava create success");
+            }
         }
         else
         {
@@ -365,6 +587,10 @@ public class AntService extends Service
             {
                 synchronized(sAntHalServiceDestroy_LOCK)
                 {
+                    if (asyncSetAntPowerState(false) != AntHalDefine.ANT_HAL_RESULT_SUCCESS)
+                    {
+                        Log.w(TAG, "onDestroy disable failed");
+                    }
                     int result = disableBlocking();
                     if (DEBUG) Log.d(TAG, "onDestroy: disable result is: " + AntHalDefine.getAntHalResultString(result));
                     mJAnt.destroy();
@@ -454,6 +680,17 @@ public class AntService extends Service
         public synchronized void ANTStateChange(int NewState)
         {
             if (DEBUG) Log.i(TAG, "ANTStateChange callback to " + NewState);
+            
+            if(mBluetoothServiceAntEnabling) {
+                Log.w(TAG, "Native state change ignored while waiting for BluetoothService ANT enable");
+                return;
+            }
+            
+            if(mBluetoothServiceAntDisabling) {
+                Log.w(TAG, "Native state change ignored while waiting for BluetoothService ANT disable");
+                return;
+            }
+            
             setState(NewState);
         }
     };
