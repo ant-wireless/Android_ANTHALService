@@ -18,12 +18,18 @@
 
 package com.dsi.ant.server;
 
+import android.bluetooth.BluetoothAdapter;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.app.Service;
+import android.os.Binder;
 import android.os.IBinder;
 import android.os.RemoteException;
+import android.provider.Settings;
 import android.util.Log;
+import android.os.SystemProperties;
 
 import com.dsi.ant.core.*;
 
@@ -40,14 +46,56 @@ public class AntService extends Service
 
     public static final String ANT_SERVICE = "AntService";
 
+    public static final String ANT_ADMIN_PERMISSION = "com.dsi.ant.permission.ANT_ADMIN";
+
+    public static final String ACTION_REQUEST_ENABLE = "com.dsi.ant.server.action.REQUEST_ENABLE";
+
+    public static final String ACTION_REQUEST_DISABLE = "com.dsi.ant.server.action.REQUEST_DISABLE";
+
     private JAntJava mJAnt = null;
 
     private boolean mInitialized = false;
+
+    private boolean mRequiresBluetoothOn = false;
+
+    private boolean mEnablePending = false;
 
     private Object mChangeAntPowerState_LOCK = new Object();
     private static Object sAntHalServiceDestroy_LOCK = new Object();
 
     IAntHalCallback mCallback;
+
+    private boolean isQcomPlatform()
+    {
+        if ((SystemProperties.get("ro.board.platform").equals("msm8974"))
+                || (SystemProperties.get("ro.board.platform").equals("msm8610"))
+                || (SystemProperties.get("ro.board.platform").equals("msm8226"))) {
+
+            return true;
+        }
+        return false;
+    }
+
+    private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (mRequiresBluetoothOn) {
+                String action = intent.getAction();
+                if (ACTION_REQUEST_ENABLE.equals(action)) {
+                    if (mEnablePending) {
+                        asyncSetAntPowerState(true);
+                        mEnablePending = false;
+                    }
+                } else if (ACTION_REQUEST_DISABLE.equals(action)) {
+                    if (mEnablePending) {
+                        mEnablePending = false;
+                    } else {
+                        asyncSetAntPowerState(false);
+                    }
+                }
+            }
+        }
+    };
 
     public static boolean startService(Context context)
     {
@@ -99,7 +147,42 @@ public class AntService extends Service
             {
                 case AntHalDefine.ANT_HAL_STATE_ENABLED:
                 {
-                    result = asyncSetAntPowerState(true);
+                    result = AntHalDefine.ANT_HAL_RESULT_FAIL_NOT_ENABLED;
+
+                    boolean waitForBluetoothToEnable = false;
+
+                    if (mRequiresBluetoothOn) {
+
+                        // Try to turn on BT if it is not enabled.
+                        BluetoothAdapter bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+
+                        if (bluetoothAdapter != null) {
+                            long callingPid = Binder.clearCallingIdentity();
+
+                            if (!bluetoothAdapter.isEnabled()) {
+
+                                waitForBluetoothToEnable = true;
+
+                                // check permissions of ANTHALService
+                                boolean isEnabling = bluetoothAdapter.enable();
+
+                                // if enabling adapter has begun, return
+                                // success.
+                                if (isEnabling) {
+                                    mEnablePending = true;
+                                    result = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+                                    // StateChangedReceiver will receive
+                                    // enabled status and then enable ANT
+                                }
+                            }
+
+                            Binder.restoreCallingIdentity(callingPid);
+                        }
+                    }
+
+                    if (!waitForBluetoothToEnable) {
+                        result = asyncSetAntPowerState(true);
+                    }
                     break;
                 }
                 case AntHalDefine.ANT_HAL_STATE_DISABLED:
@@ -430,6 +513,7 @@ public class AntService extends Service
         }
         // create a single new JAnt HCI Interface instance
         mJAnt = new JAntJava();
+        mRequiresBluetoothOn = isQcomPlatform();
         JAntStatus createResult = mJAnt.create(mJAntCallback);
 
         if (createResult == JAntStatus.SUCCESS)
@@ -444,6 +528,11 @@ public class AntService extends Service
 
             if (DEBUG) Log.e(TAG, "JAntJava create failed: " + createResult);
         }
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ACTION_REQUEST_ENABLE);
+        filter.addAction(ACTION_REQUEST_DISABLE);
+        registerReceiver(mReceiver, filter);
     }
 
     @Override
@@ -471,6 +560,8 @@ public class AntService extends Service
         {
             super.onDestroy();
         }
+
+        unregisterReceiver(mReceiver);
     }
 
     @Override

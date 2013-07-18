@@ -50,6 +50,15 @@ limitations under the License.
             </intent-filter>
         </receiver>
         
+        <receiver android:name="com.dsi.ant.server.StateChangedReceiver"
+            android:enabled="true"
+            android:exported="false"
+            android:label="StateChangedReceiver">
+            <intent-filter>
+                <action android:name="android.bluetooth.adapter.action.STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
     <!-- These permissions should be defined in the system -->
@@ -71,5 +80,7 @@ limitations under the License.
         android:description="@string/permdesc_antradio"
         android:label="@string/permlab_antradio"/>
 
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 </manifest> 
