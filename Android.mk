@@ -33,7 +33,7 @@ LOCAL_SRC_FILES := \
     src/com/dsi/ant/server/IAntHalCallback.aidl
 
 #
-# If target board is not one that requires Bluetooth to be enabled for ANT to enable,
+# If target board is not one that requires Bluetooth to be enabled for ANT to enable, 
 # filter out files that are only needed for Bluetooth to enable when ANT is enabled.
 #
 
