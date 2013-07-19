@@ -16,8 +16,8 @@ limitations under the License.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.dsi.ant.server"
-    android:versionName="3.0.1"
-    android:versionCode="030001"
+    android:versionName="3.1.0"
+    android:versionCode="030100"
     android:sharedUserId="android.uid.system">
 
     <uses-sdk
@@ -47,15 +47,6 @@ limitations under the License.
             android:label="BootCompletedReceiver">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
-        
-        <receiver android:name="com.dsi.ant.server.StateChangedReceiver"
-            android:enabled="true"
-            android:exported="false"
-            android:label="StateChangedReceiver">
-            <intent-filter>
-                <action android:name="android.bluetooth.adapter.action.STATE_CHANGED" />
             </intent-filter>
         </receiver>
 

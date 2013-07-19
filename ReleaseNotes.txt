@@ -1,6 +1,6 @@
 AntHalService - Release Notes
-v3.0.1
-2013-07-18
+v3.1.0
+2013-07-19
 
 Copyright 2011 Dynastream Innovations
 
@@ -26,6 +26,12 @@ messages, enable, disable and get the enebaled state.
 
 =============================================================
 2. REVISION HISTORY
+
+v3.1.0 : 2013-07-19 : Android_System_ANTHALService_3-1-0
+
+Task
+    [ANTDROID-2035] - Remove tabs from AntService
+    [ANTDROID-1987] - Enable Bluetooth when ANT is enabled, if required by chip
 
 v3.0.0 : 2013-01-17 : Android_System_ANTHALService_3-0-0
 

@@ -20,9 +20,6 @@ ifneq ($(BOARD_ANT_WIRELESS_DEVICE),)
 LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
-BT_ON_SRC_FILES := \
-     src/com/dsi/ant/server/StateChangedReceiver.java
-
 #
 # ANT java system service
 #
@@ -31,16 +28,6 @@ LOCAL_SRC_FILES := \
     $(call all-java-files-under, src) \
     src/com/dsi/ant/server/IAntHal.aidl \
     src/com/dsi/ant/server/IAntHalCallback.aidl
-
-#
-# If target board is not one that requires Bluetooth to be enabled for ANT to enable, 
-# filter out files that are only needed for Bluetooth to enable when ANT is enabled.
-#
-
-ifeq ($(filter msm8610 msm8226 msm8974, $(TARGET_BOARD_PLATFORM)),)
-LOCAL_SRC_FILES := \
-     $(filter-out  $(BT_ON_SRC_FILES), $(LOCAL_SRC_FILES))
-endif
 
 LOCAL_REQUIRED_MODULES := libantradio
 LOCAL_PROGUARD_FLAG_FILES := proguard.flags

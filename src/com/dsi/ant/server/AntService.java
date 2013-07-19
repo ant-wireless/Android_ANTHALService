@@ -46,18 +46,35 @@ public class AntService extends Service
 
     public static final String ANT_SERVICE = "AntService";
 
+    /**
+     * Allows the application to directly configure the ANT radio through the
+     * proxy service. Malicious applications may prevent other ANT applications
+     * from connecting to ANT devices
+     */
     public static final String ANT_ADMIN_PERMISSION = "com.dsi.ant.permission.ANT_ADMIN";
 
+    /**
+     * Request that ANT be enabled
+     */
     public static final String ACTION_REQUEST_ENABLE = "com.dsi.ant.server.action.REQUEST_ENABLE";
 
+    /**
+     * Request that ANT be disabled
+     */
     public static final String ACTION_REQUEST_DISABLE = "com.dsi.ant.server.action.REQUEST_DISABLE";
 
     private JAntJava mJAnt = null;
 
     private boolean mInitialized = false;
 
+    /**
+     * Flag for if Bluetooth needs to be enabled for ANT to enable
+     */
     private boolean mRequiresBluetoothOn = false;
 
+    /**
+     * Flag which specifies if we are waiting for an ANT enable intent
+     */
     private boolean mEnablePending = false;
 
     private Object mChangeAntPowerState_LOCK = new Object();
@@ -65,17 +82,16 @@ public class AntService extends Service
 
     IAntHalCallback mCallback;
 
-    private boolean isQcomPlatform()
-    {
-        if ((SystemProperties.get("ro.board.platform").equals("msm8974"))
-                || (SystemProperties.get("ro.board.platform").equals("msm8610"))
-                || (SystemProperties.get("ro.board.platform").equals("msm8226"))) {
+    /**
+     * Receives Bluetooth State Changed intent and sends {@link ACTION_REQUEST_ENABLE}
+     * and {@link ACTION_REQUEST_DISABLE} accordingly
+     */
+    private final StateChangedReceiver mStateChangedReceiver = new StateChangedReceiver();
 
-            return true;
-        }
-        return false;
-    }
-
+    /**
+     * Receives {@link ACTION_REQUEST_ENABLE} and {@link ACTION_REQUEST_DISABLE}
+     * intents to enable and disable ANT.
+     */
     private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -96,6 +112,27 @@ public class AntService extends Service
             }
         }
     };
+
+    /**
+     * Checks if Bluetooth needs to be turned on for ANT to enable
+     */
+    private boolean requiresBluetoothOn() {
+        return isQcomPlatform();
+    }
+
+    /**
+     * Checks if the current platform is QCom
+     */
+    private boolean isQcomPlatform()
+    {
+        if ((SystemProperties.get("ro.board.platform").equals("msm8974"))
+                || (SystemProperties.get("ro.board.platform").equals("msm8610"))
+                || (SystemProperties.get("ro.board.platform").equals("msm8226"))) {
+
+            return true;
+        }
+        return false;
+    }
 
     public static boolean startService(Context context)
     {
@@ -157,22 +194,25 @@ public class AntService extends Service
                         BluetoothAdapter bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
 
                         if (bluetoothAdapter != null) {
+
+                            // run with permissions of ANTHALService
                             long callingPid = Binder.clearCallingIdentity();
 
                             if (!bluetoothAdapter.isEnabled()) {
 
                                 waitForBluetoothToEnable = true;
-
-                                // check permissions of ANTHALService
+                                mEnablePending = true;
+                                
                                 boolean isEnabling = bluetoothAdapter.enable();
 
                                 // if enabling adapter has begun, return
                                 // success.
                                 if (isEnabling) {
-                                    mEnablePending = true;
                                     result = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
                                     // StateChangedReceiver will receive
                                     // enabled status and then enable ANT
+                                } else {
+                                    mEnablePending = false;
                                 }
                             }
 
@@ -226,44 +266,48 @@ public class AntService extends Service
      */
     private int asyncSetAntPowerState(final boolean state)
     {
-    	int result = AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
+        int result = AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
 
-    	synchronized(mChangeAntPowerState_LOCK) {
-    		// Check we are not already in/transitioning to the state we want
-    		int currentState = doGetAntState();
+        synchronized (mChangeAntPowerState_LOCK) {
+            // Check we are not already in/transitioning to the state we want
+            int currentState = doGetAntState();
 
-    		if(state) {
-    			if((AntHalDefine.ANT_HAL_STATE_ENABLED == currentState)
-    					|| (AntHalDefine.ANT_HAL_STATE_ENABLING == currentState)) {
-    				if(DEBUG) Log.d(TAG, "Enable request ignored as already enabled/enabling");
+            if (state) {
+                if ((AntHalDefine.ANT_HAL_STATE_ENABLED == currentState)
+                        || (AntHalDefine.ANT_HAL_STATE_ENABLING == currentState)) {
+                    if (DEBUG) {
+                        Log.d(TAG, "Enable request ignored as already enabled/enabling");
+                    }
 
-    				return AntHalDefine.ANT_HAL_RESULT_SUCCESS;
-    			} else if(AntHalDefine.ANT_HAL_STATE_DISABLING == currentState) {
-    				Log.w(TAG, "Enable request ignored as already disabling");
+                    return AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+                } else if (AntHalDefine.ANT_HAL_STATE_DISABLING == currentState) {
+                    Log.w(TAG, "Enable request ignored as already disabling");
 
-    				return AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
-    			}
-    		} else {
-    			if((AntHalDefine.ANT_HAL_STATE_DISABLED == currentState)
-    					|| (AntHalDefine.ANT_HAL_STATE_DISABLING == currentState)) {
-    				if(DEBUG)Log.d(TAG, "Disable request ignored as already disabled/disabling");
+                    return AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
+                }
+            } else {
+                if ((AntHalDefine.ANT_HAL_STATE_DISABLED == currentState)
+                        || (AntHalDefine.ANT_HAL_STATE_DISABLING == currentState)) {
+                    if (DEBUG) {
+                        Log.d(TAG, "Disable request ignored as already disabled/disabling");
+                    }
 
-    				return AntHalDefine.ANT_HAL_RESULT_SUCCESS;
-    			} else if(AntHalDefine.ANT_HAL_STATE_ENABLING == currentState) {
-    				Log.w(TAG, "Disable request ignored as already enabling");
+                    return AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+                } else if (AntHalDefine.ANT_HAL_STATE_ENABLING == currentState) {
+                    Log.w(TAG, "Disable request ignored as already enabling");
 
-    				return AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
-    			}
-    		}
+                    return AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
+                }
+            }
 
-    		if (state) {
-    			result = enableBackground();
-    		} else {
-    			result = disableBackground();
-    		}
+            if (state) {
+                result = enableBackground();
+            } else {
+                result = disableBackground();
+            }
         }
-    	
-    	return result;
+
+        return result;
     }
 
     /**
@@ -513,7 +557,7 @@ public class AntService extends Service
         }
         // create a single new JAnt HCI Interface instance
         mJAnt = new JAntJava();
-        mRequiresBluetoothOn = isQcomPlatform();
+        mRequiresBluetoothOn = requiresBluetoothOn();
         JAntStatus createResult = mJAnt.create(mJAntCallback);
 
         if (createResult == JAntStatus.SUCCESS)
@@ -533,6 +577,12 @@ public class AntService extends Service
         filter.addAction(ACTION_REQUEST_ENABLE);
         filter.addAction(ACTION_REQUEST_DISABLE);
         registerReceiver(mReceiver, filter);
+        
+        if (mRequiresBluetoothOn) {
+            IntentFilter stateChangedFilter = new IntentFilter();
+            stateChangedFilter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
+            registerReceiver(mStateChangedReceiver, stateChangedFilter);
+        }
     }
 
     @Override
@@ -559,6 +609,10 @@ public class AntService extends Service
         finally
         {
             super.onDestroy();
+        }
+
+        if (mRequiresBluetoothOn) {
+            unregisterReceiver(mStateChangedReceiver);
         }
 
         unregisterReceiver(mReceiver);
