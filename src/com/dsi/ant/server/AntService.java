@@ -117,21 +117,7 @@ public class AntService extends Service
      * Checks if Bluetooth needs to be turned on for ANT to enable
      */
     private boolean requiresBluetoothOn() {
-        return isQcomPlatform();
-    }
-
-    /**
-     * Checks if the current platform is QCom
-     */
-    private boolean isQcomPlatform()
-    {
-        if ((SystemProperties.get("ro.board.platform").equals("msm8974"))
-                || (SystemProperties.get("ro.board.platform").equals("msm8610"))
-                || (SystemProperties.get("ro.board.platform").equals("msm8226"))) {
-
-            return true;
-        }
-        return false;
+        return false; // Set to true if require bluetooth on for ANT functionality
     }
 
     public static boolean startService(Context context)
