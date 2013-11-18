@@ -1,6 +1,6 @@
 AntHalService - Release Notes
-v3.1.0
-2013-07-19
+v3.1.1
+2013-11-18
 
 Copyright 2011 Dynastream Innovations
 
@@ -26,6 +26,12 @@ messages, enable, disable and get the enebaled state.
 
 =============================================================
 2. REVISION HISTORY
+
+v.3.1.1: 2013-11-18 : Android_System_ANTHALService_3-1-0
+Improvement
+    [ANTDROID-2223] - Disable "Need BT On for ANT" logic by default
+
+-------------------------------------------------------------
 
 v3.1.0 : 2013-07-19 : Android_System_ANTHALService_3-1-0
 
