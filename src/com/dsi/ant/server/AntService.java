@@ -80,7 +80,11 @@ public class AntService extends Service
     private Object mChangeAntPowerState_LOCK = new Object();
     private static Object sAntHalServiceDestroy_LOCK = new Object();
 
-    IAntHalCallback mCallback;
+    /** Callback object for sending events to the upper layers */
+    private volatile IAntHalCallback mCallback;
+    /** Used for synchronizing changes to {@link #mCallback}
+     * The synchronization is needed because of how {@link #doUnregisterAntHalCallback(IAntHalCallback)} works */
+    private final Object mCallback_LOCK = new Object();
 
     /**
      * Receives Bluetooth State Changed intent and sends {@link ACTION_REQUEST_ENABLE}
@@ -126,7 +130,7 @@ public class AntService extends Service
     }
 
     /**
-     * Calls back the registered callback with the change to the new state 
+     * Calls back the registered callback with the change to the new state
      * @param state the {@link AntHalDefine} state
      */
     private void setState(int state)
@@ -134,13 +138,16 @@ public class AntService extends Service
         synchronized(mChangeAntPowerState_LOCK) {
             if(DEBUG) Log.i(TAG, "Setting ANT State = "+ state +" / "+ AntHalDefine.getAntHalStateString(state));
 
-            if (mCallback != null)
+            // Use caching instead of synchronization so that we do not have to hold a lock during a callback.
+            // It is safe to not hold the lock because we are not doing any write accesses.
+            IAntHalCallback callback = mCallback;
+            if (callback != null)
             {
                 try
                 {
-                    if(DEBUG) Log.d(TAG, "Calling status changed callback "+ mCallback.toString());
+                    if(DEBUG) Log.d(TAG, "Calling status changed callback "+ callback.toString());
 
-                    mCallback.antHalStateChanged(state);
+                    callback.antHalStateChanged(state);
                 }
                 catch (RemoteException e)
                 {
@@ -188,7 +195,7 @@ public class AntService extends Service
 
                                 waitForBluetoothToEnable = true;
                                 mEnablePending = true;
-                                
+
                                 boolean isEnabling = bluetoothAdapter.enable();
 
                                 // if enabling adapter has begun, return
@@ -222,7 +229,7 @@ public class AntService extends Service
                     break;
                 }
             }
-            
+
             return result;
         }
     }
@@ -236,7 +243,7 @@ public class AntService extends Service
         if(DEBUG) Log.v(TAG, "doGetAntState start");
 
         int retState = mJAnt.getRadioEnabledStatus(); // ANT state is native state
-        
+
         if(DEBUG) Log.i(TAG, "Get ANT State = "+ retState +" / "+ AntHalDefine.getAntHalStateString(retState));
 
         return retState;
@@ -244,11 +251,9 @@ public class AntService extends Service
 
     /**
      * Perform a power change if required.
-     * Tries to use changeAntWirelessState() in {@link BluetoothService}. If it does not exist then
-     * it defaults to a native enable() or disable() call
      * @param state true for enable, false for disable
-     * @return {@link AntHalDefine#ANT_HAL_RESULT_SUCCESS} when the request is successfully sent,
-     * false otherwise
+     * @return {@link AntHalDefine#ANT_HAL_RESULT_SUCCESS} when the request has
+     * been posted, false otherwise
      */
     private int asyncSetAntPowerState(final boolean state)
     {
@@ -435,7 +440,10 @@ public class AntService extends Service
     {
         if(DEBUG) Log.i(TAG, "Registering callback: "+ callback.toString());
 
-        mCallback = callback;
+        synchronized(mCallback_LOCK)
+        {
+            mCallback = callback;
+        }
 
         return AntHalDefine.ANT_HAL_RESULT_SUCCESS;
     }
@@ -446,10 +454,13 @@ public class AntService extends Service
 
         int result = AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
 
-        if(mCallback.asBinder() == callback.asBinder())
+        synchronized (mCallback_LOCK)
         {
-            mCallback = null;
-            result = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+            if(mCallback.asBinder() == callback.asBinder())
+            {
+                mCallback = null;
+                result = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+            }
         }
 
         return result;
@@ -535,7 +546,7 @@ public class AntService extends Service
         if (DEBUG) Log.d(TAG, "onCreate() entered");
 
         super.onCreate();
-        
+
         if(null != mJAnt)
         {
             // This somehow happens when quickly starting/stopping an application.
@@ -548,9 +559,9 @@ public class AntService extends Service
 
         if (createResult == JAntStatus.SUCCESS)
         {
-        	mInitialized = true;
+            mInitialized = true;
 
-        	if (DEBUG) Log.d(TAG, "JAntJava create success");
+            if (DEBUG) Log.d(TAG, "JAntJava create success");
         }
         else
         {
@@ -563,7 +574,7 @@ public class AntService extends Service
         filter.addAction(ACTION_REQUEST_ENABLE);
         filter.addAction(ACTION_REQUEST_DISABLE);
         registerReceiver(mReceiver, filter);
-        
+
         if (mRequiresBluetoothOn) {
             IntentFilter stateChangedFilter = new IntentFilter();
             stateChangedFilter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
@@ -578,19 +589,22 @@ public class AntService extends Service
 
         try
         {
-        	synchronized(sAntHalServiceDestroy_LOCK)
+            synchronized(sAntHalServiceDestroy_LOCK)
             {
                 if(null != mJAnt)
                 {
                     int result = disableBlocking();
                     if (DEBUG) Log.d(TAG, "onDestroy: disable result is: " + AntHalDefine.getAntHalResultString(result));
-                    
+
                     mJAnt.destroy();
                     mJAnt = null;
                 }
             }
 
-            mCallback = null;
+            synchronized (mCallback_LOCK)
+            {
+                mCallback = null;
+            }
         }
         finally
         {
@@ -633,7 +647,10 @@ public class AntService extends Service
     {
         if (DEBUG) Log.d(TAG, "onUnbind() entered");
 
-        mCallback = null;
+        synchronized (mCallback_LOCK)
+        {
+            mCallback = null;
+        }
 
         return super.onUnbind(intent);
     }
@@ -657,11 +674,14 @@ public class AntService extends Service
     {
         public synchronized void ANTRxMessage( byte[] message)
         {
-            if(null != mCallback)
+            // Use caching instead of synchronization so that we do not have to hold a lock during a callback.
+            // It is safe to not hold the lock because we are not doing any write accesses.
+            IAntHalCallback callback = mCallback;
+            if(null != callback)
             {
                 try
                 {
-                    mCallback.antHalRxMessage(message);
+                    callback.antHalRxMessage(message);
                 }
                 catch (RemoteException e)
                 {
@@ -678,7 +698,7 @@ public class AntService extends Service
         public synchronized void ANTStateChange(int NewState)
         {
             if (DEBUG) Log.i(TAG, "ANTStateChange callback to " + NewState);
-            
+
             setState(NewState);
         }
     };

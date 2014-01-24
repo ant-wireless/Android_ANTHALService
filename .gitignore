@@ -1,21 +1,12 @@
-# built application files
-*.apk
-*.ap_
+# Ignores for Eclipse
+/.settings/
 
-# files for the dex VM
-*.dex
+# Ignores for Android Projects
+/bin/
+/gen/
+/publish/
+/local.properties
+/secure.properties
 
-# Java class files
-*.class
-
-# generated files
-bin/
-gen/
-
-# Local configuration file (sdk path, etc)
-local.properties
-# and the not safe to be released part
-secure.properties
-
-# CVS files
-CVS/
+# Ignores for Mac machines
+.DS_Store
