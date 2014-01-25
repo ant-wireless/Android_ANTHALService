@@ -16,7 +16,7 @@ limitations under the License.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.dsi.ant.server"
-    android:versionName="3.2.0"
+    android:versionName="3.2/ft_userswitch/1"
     android:versionCode="030200"
     android:sharedUserId="android.uid.system">
 
@@ -74,4 +74,7 @@ limitations under the License.
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS" />
+    <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    <uses-permission android:name="android.permission.MANAGE_USERS"/>
 </manifest> 

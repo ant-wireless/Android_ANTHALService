@@ -23,14 +23,16 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
+import android.app.ActivityManagerNative;
 import android.app.Service;
 import android.os.Binder;
+import android.os.Build;
 import android.os.IBinder;
 import android.os.RemoteException;
-import android.provider.Settings;
+import android.os.UserHandle;
 import android.util.Log;
-import android.os.SystemProperties;
-
 import com.dsi.ant.core.*;
 
 import com.dsi.ant.server.AntHalDefine;
@@ -38,11 +40,23 @@ import com.dsi.ant.server.IAntHal;
 import com.dsi.ant.server.IAntHalCallback;
 import com.dsi.ant.server.Version;
 
+import java.util.HashMap;
+
 public class AntService extends Service
 {
     private static final String TAG = "AntHalService";
 
     private static final boolean DEBUG = false;
+
+    private static final boolean HAS_MULTI_USER_API =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1;
+
+    /**
+     * This flag determines if background users are allowed to use the ANT radio or not. Note that
+     * even if this flag is set, the active foreground user always has priority for using the
+     * ANT radio.
+     */
+    private static final boolean ALLOW_BACKGROUND_USAGE = true;
 
     public static final String ANT_SERVICE = "AntService";
 
@@ -82,9 +96,23 @@ public class AntService extends Service
 
     /** Callback object for sending events to the upper layers */
     private volatile IAntHalCallback mCallback;
-    /** Used for synchronizing changes to {@link #mCallback}
-     * The synchronization is needed because of how {@link #doUnregisterAntHalCallback(IAntHalCallback)} works */
-    private final Object mCallback_LOCK = new Object();
+    /**
+     * Used for synchronizing changes to {@link #mCallback}, {@link #mCallbackMap}, and
+     * {@link #mCurrentUser}. Does not need to be used where a one-time read of the
+     * {@link #mCallback} value is being done, however ALL WRITE ACCESSES must use this lock.
+     */
+    private final Object mUserCallback_LOCK = new Object();
+
+    /**
+     * The user handle associated with the current active user of the ANT HAL service.
+     */
+    private volatile UserHandle mCurrentUser;
+
+    /**
+     * Map containing the callback set for each current user.
+     */
+    private final HashMap<UserHandle, IAntHalCallback> mCallbackMap =
+            new HashMap<UserHandle, IAntHalCallback>();
 
     /**
      * Receives Bluetooth State Changed intent and sends {@link ACTION_REQUEST_ENABLE}
@@ -95,12 +123,14 @@ public class AntService extends Service
     /**
      * Receives {@link ACTION_REQUEST_ENABLE} and {@link ACTION_REQUEST_DISABLE}
      * intents to enable and disable ANT.
+     * Also receives {@link Intent#ACTION_USER_SWITCHED} when we are not allowing background users
+     * in order to clear the current user at the appropriate time.
      */
     private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
             if (mRequiresBluetoothOn) {
-                String action = intent.getAction();
                 if (ACTION_REQUEST_ENABLE.equals(action)) {
                     if (mEnablePending) {
                         asyncSetAntPowerState(true);
@@ -112,6 +142,14 @@ public class AntService extends Service
                     } else {
                         asyncSetAntPowerState(false);
                     }
+                }
+            }
+            if(!ALLOW_BACKGROUND_USAGE)
+            {
+                if(HAS_MULTI_USER_API &&
+                        Intent.ACTION_USER_SWITCHED.equals(action))
+                {
+                    clearCurrentUser();
                 }
             }
         }
@@ -164,10 +202,112 @@ public class AntService extends Service
     }
 
     /**
+     * Clear the current user, telling the associated ARS instance that the chip is disabled.
+     */
+    private void clearCurrentUser()
+    {
+        if (DEBUG) Log.i(TAG, "Clearing active user");
+        synchronized (mUserCallback_LOCK)
+        {
+            setState(AntHalDefine.ANT_HAL_STATE_DISABLED);
+            mCurrentUser = null;
+            mCallback = null;
+            doSetAntState(AntHalDefine.ANT_HAL_STATE_DISABLED);
+        }
+    }
+
+    /**
+     * Attempt to change the current user to the calling user.
+     * @return True if the calling user is now the current user (even if they were before the call
+     *         was made), False otherwise.
+     */
+    @TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR1)
+    private boolean trySwitchToCallingUser()
+    {
+        // Lock held here to avoid ordering issues if it is needed within the function.
+        synchronized (mChangeAntPowerState_LOCK)
+        {
+            synchronized (mUserCallback_LOCK)
+            {
+                UserHandle callingUser = Binder.getCallingUserHandle();
+                if(DEBUG) Log.d(TAG, "Trying to make user: " + callingUser + " the current user.");
+                boolean isActiveUser = false;
+                boolean shouldSwitch = false;
+                long id = 0;
+
+                // Always allow if they already are the current user.
+                if(callingUser.equals(mCurrentUser))
+                {
+                    shouldSwitch = true;
+                }
+
+                try
+                {
+                    // Check foreground user using ANT HAL Service permissions.
+                    id = Binder.clearCallingIdentity();
+                    UserHandle activeUser =
+                            ActivityManagerNative.getDefault().getCurrentUser().getUserHandle();
+                    isActiveUser = activeUser.equals(callingUser);
+                } catch (RemoteException e)
+                {
+                    if(DEBUG) Log.w(TAG, "Could not determine the foreground user.");
+                    // don't know who the current user is, assume they are not the active user and
+                    // continue.
+                } finally
+                {
+                    // always restore our identity.
+                    Binder.restoreCallingIdentity(id);
+                }
+
+                if(isActiveUser)
+                {
+                    // Always allow the active user to become the current user.
+                    shouldSwitch = true;
+                }
+
+                if(ALLOW_BACKGROUND_USAGE)
+                {
+                    // Allow anyone to become the current user if there is no current user.
+                    if(mCurrentUser == null)
+                    {
+                        shouldSwitch = true;
+                    }
+                }
+
+                if(shouldSwitch)
+                {
+                    // Only actually do the switch if the users are different.
+                    if(!callingUser.equals(mCurrentUser))
+                    {
+                        if (DEBUG) Log.i(TAG, "Making " + callingUser + " the current user.");
+                        // Need to send state updates as the current user switches.
+                        // The mChangeAntPowerState_LOCK needs to be held across these calls to
+                        // prevent state updates during the user switch. It is held for this entire
+                        // function to prevent lock ordering issues.
+                        setState(AntHalDefine.ANT_HAL_STATE_DISABLED);
+                        mCurrentUser = callingUser;
+                        mCallback = mCallbackMap.get(callingUser);
+                        setState(doGetAntState(true));
+                    } else
+                    {
+                        if (DEBUG) Log.d(TAG, callingUser + " is already the current user.");
+                    }
+                } else
+                {
+                    if (DEBUG) Log.d(TAG, callingUser + " is not allowed to become the current user.");
+                }
+
+                return shouldSwitch;
+            }
+        }
+    }
+
+    /**
      * Requests to change the state
      * @param state The desired state to change to
      * @return An {@link AntHalDefine} result
      */
+    @SuppressLint("NewApi")
     private int doSetAntState(int state)
     {
         synchronized(mChangeAntPowerState_LOCK) {
@@ -178,6 +318,17 @@ public class AntService extends Service
                 case AntHalDefine.ANT_HAL_STATE_ENABLED:
                 {
                     result = AntHalDefine.ANT_HAL_RESULT_FAIL_NOT_ENABLED;
+
+                    // On platforms with multiple users the enable call is where we try to switch
+                    // the current user.
+                    if(HAS_MULTI_USER_API)
+                    {
+                        if(!trySwitchToCallingUser())
+                        {
+                            // If we cannot become the current user, fail the enable call.
+                            break;
+                        }
+                    }
 
                     boolean waitForBluetoothToEnable = false;
 
@@ -220,7 +371,28 @@ public class AntService extends Service
                 }
                 case AntHalDefine.ANT_HAL_STATE_DISABLED:
                 {
-                    result = asyncSetAntPowerState(false);
+                    if(HAS_MULTI_USER_API)
+                    {
+                        UserHandle user = Binder.getCallingUserHandle();
+                        if(!user.equals(mCurrentUser))
+                        {
+                            // All disables succeed for non current users.
+                            result = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+                            break;
+                        }
+
+                        result = asyncSetAntPowerState(false);
+
+                        if(result == AntHalDefine.ANT_HAL_RESULT_SUCCESS &&
+                                user.equals(mCurrentUser))
+                        {
+                            // To match setting the current user in enable.
+                            clearCurrentUser();
+                        }
+                    } else
+                    {
+                        result = asyncSetAntPowerState(false);
+                    }
                     break;
                 }
                 case AntHalDefine.ANT_HAL_STATE_RESET:
@@ -238,11 +410,18 @@ public class AntService extends Service
      * Queries the native code for state
      * @return An {@link AntHalDefine} state
      */
-    private int doGetAntState()
+    @SuppressLint("NewApi")
+    private int doGetAntState(boolean internalCall)
     {
         if(DEBUG) Log.v(TAG, "doGetAntState start");
 
-        int retState = mJAnt.getRadioEnabledStatus(); // ANT state is native state
+        int retState = AntHalDefine.ANT_HAL_STATE_DISABLED;
+        if(!HAS_MULTI_USER_API || // If there is no multi-user api we don't have to fake a disabled state.
+                internalCall ||
+                Binder.getCallingUserHandle().equals(mCurrentUser))
+        {
+            retState = mJAnt.getRadioEnabledStatus(); // ANT state is native state
+        }
 
         if(DEBUG) Log.i(TAG, "Get ANT State = "+ retState +" / "+ AntHalDefine.getAntHalStateString(retState));
 
@@ -261,7 +440,7 @@ public class AntService extends Service
 
         synchronized (mChangeAntPowerState_LOCK) {
             // Check we are not already in/transitioning to the state we want
-            int currentState = doGetAntState();
+            int currentState = doGetAntState(true);
 
             if (state) {
                 if ((AntHalDefine.ANT_HAL_STATE_ENABLED == currentState)
@@ -436,33 +615,69 @@ public class AntService extends Service
         return result;
     }
 
+    @SuppressLint("NewApi")
     private int doRegisterAntHalCallback(IAntHalCallback callback)
     {
-        if(DEBUG) Log.i(TAG, "Registering callback: "+ callback.toString());
-
-        synchronized(mCallback_LOCK)
+        synchronized (mUserCallback_LOCK)
         {
-            mCallback = callback;
+            if(HAS_MULTI_USER_API)
+            {
+                UserHandle user = Binder.getCallingUserHandle();
+                if(DEBUG) Log.i(TAG, "Registering callback: "+ callback + " for user: " + user);
+                mCallbackMap.put(user, callback);
+                if(user.equals(mCurrentUser))
+                {
+                    mCallback = callback;
+                }
+            } else
+            {
+                if(DEBUG) Log.i(TAG, "Registering callback: "+ callback);
+                mCallback = callback;
+            }
         }
 
         return AntHalDefine.ANT_HAL_RESULT_SUCCESS;
     }
 
+    @SuppressLint("NewApi")
     private int doUnregisterAntHalCallback(IAntHalCallback callback)
     {
-        if(DEBUG) Log.i(TAG, "UNRegistering callback: "+ callback.toString());
-
         int result = AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
 
-        synchronized (mCallback_LOCK)
+        if(HAS_MULTI_USER_API)
         {
-            if(mCallback.asBinder() == callback.asBinder())
+            UserHandle user = Binder.getCallingUserHandle();
+            if(DEBUG) Log.i(TAG, "Unregistering callback: "+ callback.toString() + " for user: " +
+                    user);
+            synchronized(mUserCallback_LOCK)
             {
-                mCallback = null;
-                result = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+                IAntHalCallback currentCallback = mCallbackMap.get(user);
+                if(callback != null && currentCallback != null &&
+                        callback.asBinder().equals(currentCallback.asBinder()))
+                {
+                    mCallbackMap.remove(user);
+                    result = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+                }
+                // Regardless of state, if the current user is leaving we need to allow others to
+                // take over.
+                if(user.equals(mCurrentUser))
+                {
+                    clearCurrentUser();
+                }
+            }
+        } else
+        {
+            if(DEBUG) Log.i(TAG, "Unregistering callback: "+ callback.toString());
+            synchronized(mUserCallback_LOCK)
+            {
+                if(callback != null && mCallback != null &&
+                        callback.asBinder().equals(mCallback.asBinder()))
+                {
+                    mCallback = null;
+                    result = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
+                }
             }
         }
-
         return result;
     }
 
@@ -508,7 +723,7 @@ public class AntService extends Service
 
         public int getAntState()
         {
-            return doGetAntState();
+            return doGetAntState(false);
         }
 
         public int ANTTxMessage(byte[] message)
@@ -573,6 +788,15 @@ public class AntService extends Service
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_REQUEST_ENABLE);
         filter.addAction(ACTION_REQUEST_DISABLE);
+        if(HAS_MULTI_USER_API)
+        {
+            if(!ALLOW_BACKGROUND_USAGE)
+            {
+                // If we don't allow background users, we need to monitor user switches to clear the
+                // active user.
+                filter.addAction(Intent.ACTION_USER_SWITCHED);
+            }
+        }
         registerReceiver(mReceiver, filter);
 
         if (mRequiresBluetoothOn) {
@@ -601,8 +825,9 @@ public class AntService extends Service
                 }
             }
 
-            synchronized (mCallback_LOCK)
+            synchronized(mUserCallback_LOCK)
             {
+                mCallbackMap.clear();
                 mCallback = null;
             }
         }
@@ -647,9 +872,10 @@ public class AntService extends Service
     {
         if (DEBUG) Log.d(TAG, "onUnbind() entered");
 
-        synchronized (mCallback_LOCK)
+        synchronized(mUserCallback_LOCK)
         {
             mCallback = null;
+            mCallbackMap.clear();
         }
 
         return super.onUnbind(intent);
