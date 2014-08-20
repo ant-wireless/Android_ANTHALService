@@ -53,18 +53,6 @@ limitations under the License.
     </application>
 
     <!-- These permissions should be defined in the system -->
-    <permission android:name="com.dsi.ant.permission.ANT"
-        android:protectionLevel="dangerous"
-        android:permissionGroup="android.permission-group.NETWORK"
-        android:description="@string/permdesc_ant"
-        android:label="@string/permlab_ant"/>
-
-    <permission android:name="com.dsi.ant.permission.ANT_ADMIN"
-        android:protectionLevel="dangerous"
-        android:permissionGroup="android.permission-group.SYSTEM_TOOLS"
-        android:description="@string/permdesc_antAdmin"
-        android:label="@string/permlab_antAdmin"/>
-
     <permission android:name="com.dsi.ant.permission.ANTRADIO"
         android:protectionLevel="dangerous"
         android:permissionGroup="android.permission-group.SYSTEM_TOOLS"
