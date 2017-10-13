@@ -36,7 +36,7 @@ public class JAntJava
     {
         try
         {
-            System.load("libantradio.so");
+            System.loadLibrary("antradio");
         }
         catch (Exception e)
         {
