@@ -1,7 +1,7 @@
 /*
- * ANT Stack
+ * ANT Android Host Stack
  *
- * Copyright 2009 Dynastream Innovations
+ * Copyright 2009-2018 Dynastream Innovations
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
-import android.app.ActivityManagerNative;
+import android.app.ActivityManager;
 import android.app.Service;
 import android.os.Binder;
 import android.os.Build;
@@ -33,8 +33,7 @@ import android.os.IBinder;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.util.Log;
-import com.dsi.ant.core.*;
-
+import com.dsi.ant.hidl.HidlClient;
 import com.dsi.ant.server.AntHalDefine;
 import com.dsi.ant.server.IAntHal;
 import com.dsi.ant.server.IAntHalCallback;
@@ -50,13 +49,6 @@ public class AntService extends Service
 
     private static final boolean HAS_MULTI_USER_API =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1;
-
-    /**
-     * This flag determines if background users are allowed to use the ANT radio or not. Note that
-     * even if this flag is set, the active foreground user always has priority for using the
-     * ANT radio.
-     */
-    private static final boolean ALLOW_BACKGROUND_USAGE = true;
 
     public static final String ANT_SERVICE = "AntService";
 
@@ -77,12 +69,17 @@ public class AntService extends Service
      */
     public static final String ACTION_REQUEST_DISABLE = "com.dsi.ant.server.action.REQUEST_DISABLE";
 
-    private JAntJava mJAnt = null;
+    private HidlClient mAnt = null;
 
     private boolean mInitialized = false;
 
     /**
-     * Flag for if Bluetooth needs to be enabled for ANT to enable
+     * Flag for whether usage by background users is allowed. Configured in res/values/config.xml
+     */
+    private boolean mAllowBackgroundUsage = false;
+
+    /**
+     * Flag for if Bluetooth needs to be enabled for ANT to enable. Configured in res/values/config.xml
      */
     private boolean mRequiresBluetoothOn = false;
 
@@ -144,7 +141,7 @@ public class AntService extends Service
                     }
                 }
             }
-            if(!ALLOW_BACKGROUND_USAGE)
+            if(!mAllowBackgroundUsage)
             {
                 if(HAS_MULTI_USER_API &&
                         Intent.ACTION_USER_SWITCHED.equals(action))
@@ -154,13 +151,6 @@ public class AntService extends Service
             }
         }
     };
-
-    /**
-     * Checks if Bluetooth needs to be turned on for ANT to enable
-     */
-    private boolean requiresBluetoothOn() {
-        return false; // Set to true if require bluetooth on for ANT functionality
-    }
 
     public static boolean startService(Context context)
     {
@@ -246,7 +236,7 @@ public class AntService extends Service
                     // Check foreground user using ANT HAL Service permissions.
                     id = Binder.clearCallingIdentity();
                     UserHandle activeUser =
-                            ActivityManagerNative.getDefault().getCurrentUser().getUserHandle();
+                            ActivityManager.getService().getCurrentUser().getUserHandle();
                     isActiveUser = activeUser.equals(callingUser);
                 } catch (RemoteException e)
                 {
@@ -265,7 +255,7 @@ public class AntService extends Service
                     shouldSwitch = true;
                 }
 
-                if(ALLOW_BACKGROUND_USAGE)
+                if(mAllowBackgroundUsage)
                 {
                     // Allow anyone to become the current user if there is no current user.
                     if(mCurrentUser == null)
@@ -420,7 +410,7 @@ public class AntService extends Service
                 internalCall ||
                 Binder.getCallingUserHandle().equals(mCurrentUser))
         {
-            retState = mJAnt.getRadioEnabledStatus(); // ANT state is native state
+            retState = mAnt.getRadioEnabledStatus();
         }
 
         if(DEBUG) Log.i(TAG, "Get ANT State = "+ retState +" / "+ AntHalDefine.getAntHalStateString(retState));
@@ -490,9 +480,9 @@ public class AntService extends Service
         int ret = AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
         synchronized(sAntHalServiceDestroy_LOCK)
         {
-            if (mJAnt != null)
+            if (mAnt != null)
             {
-                if(JAntStatus.SUCCESS == mJAnt.enable())
+                if(mAnt.enable())
                 {
                     if(DEBUG) Log.v(TAG, "Enable call: Success");
                     ret = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
@@ -516,17 +506,11 @@ public class AntService extends Service
         int ret = AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
         synchronized(sAntHalServiceDestroy_LOCK)
         {
-            if (mJAnt != null)
+            if (mAnt != null)
             {
-                if(JAntStatus.SUCCESS == mJAnt.disable())
-                {
-                    if(DEBUG) Log.v(TAG, "Disable callback end: Success");
-                    ret = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
-                }
-                else
-                {
-                    if (DEBUG) Log.v(TAG, "Disable callback end: Failure");
-                }
+                mAnt.disable();
+                if(DEBUG) Log.v(TAG, "Disable callback end: Success");
+                ret = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
             }
         }
         return ret;
@@ -582,30 +566,15 @@ public class AntService extends Service
 
         int result = AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
 
-        JAntStatus status = mJAnt.ANTTxMessage(message);
-
-        if(JAntStatus.SUCCESS == status)
+        if (mAnt.ANTTxMessage(message))
         {
-            if (DEBUG) Log.d (TAG, "mJAnt.ANTTxMessage returned status: " + status.toString());
+            if (DEBUG) Log.d (TAG, "mJAnt.ANTTxMessage returned success.");
 
             result = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
         }
         else
         {
-            if (DEBUG) Log.w( TAG, "mJAnt.ANTTxMessage returned status: " + status.toString() );
-
-            if(JAntStatus.FAILED_BT_NOT_INITIALIZED == status)
-            {
-                result = AntHalDefine.ANT_HAL_RESULT_FAIL_NOT_ENABLED;
-            }
-            else if(JAntStatus.NOT_SUPPORTED == status)
-            {
-                result = AntHalDefine.ANT_HAL_RESULT_FAIL_NOT_SUPPORTED;
-            }
-            else if(JAntStatus.INVALID_PARM == status)
-            {
-                result = AntHalDefine.ANT_HAL_RESULT_FAIL_INVALID_REQUEST;
-            }
+            if (DEBUG) Log.w( TAG, "mJAnt.ANTTxMessage returned failure.");
         }
 
         if (DEBUG) Log.v(TAG, "ANTTxMessage: Result = "+ result);
@@ -696,9 +665,9 @@ public class AntService extends Service
         int ret = AntHalDefine.ANT_HAL_RESULT_FAIL_UNKNOWN;
         synchronized(sAntHalServiceDestroy_LOCK)
         {
-            if (mJAnt != null)
+            if (mAnt != null)
             {
-                if(JAntStatus.SUCCESS == mJAnt.hardReset())
+                if(mAnt.hardReset())
                 {
                     if(DEBUG) Log.v(TAG, "Hard Reset end: Success");
                     ret = AntHalDefine.ANT_HAL_RESULT_SUCCESS;
@@ -762,35 +731,24 @@ public class AntService extends Service
 
         super.onCreate();
 
-        if(null != mJAnt)
+        if(null != mAnt)
         {
             // This somehow happens when quickly starting/stopping an application.
             if (DEBUG) Log.e(TAG, "LAST JAnt HCI Interface object not destroyed");
         }
         // create a single new JAnt HCI Interface instance
-        mJAnt = new JAntJava();
-        mRequiresBluetoothOn = requiresBluetoothOn();
-        JAntStatus createResult = mJAnt.create(mJAntCallback);
-
-        if (createResult == JAntStatus.SUCCESS)
-        {
-            mInitialized = true;
-
-            if (DEBUG) Log.d(TAG, "JAntJava create success");
-        }
-        else
-        {
-            mInitialized = false;
-
-            if (DEBUG) Log.e(TAG, "JAntJava create failed: " + createResult);
-        }
+        mAnt = new HidlClient();
+        mAllowBackgroundUsage = getResources().getBoolean(R.bool.allow_background_usage);
+        mRequiresBluetoothOn = getResources().getBoolean(R.bool.requires_bluetooth_on);
+        mAnt.create(mAntCallback);
+        mInitialized = true;
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_REQUEST_ENABLE);
         filter.addAction(ACTION_REQUEST_DISABLE);
         if(HAS_MULTI_USER_API)
         {
-            if(!ALLOW_BACKGROUND_USAGE)
+            if(!mAllowBackgroundUsage)
             {
                 // If we don't allow background users, we need to monitor user switches to clear the
                 // active user.
@@ -815,13 +773,13 @@ public class AntService extends Service
         {
             synchronized(sAntHalServiceDestroy_LOCK)
             {
-                if(null != mJAnt)
+                if(null != mAnt)
                 {
                     int result = disableBlocking();
                     if (DEBUG) Log.d(TAG, "onDestroy: disable result is: " + AntHalDefine.getAntHalResultString(result));
 
-                    mJAnt.destroy();
-                    mJAnt = null;
+                    mAnt.destroy();
+                    mAnt = null;
                 }
             }
 
@@ -896,7 +854,7 @@ public class AntService extends Service
 
     // ----------------------------------------------------------------------------------------- JAnt Callbacks
 
-    private JAntJava.ICallback mJAntCallback = new JAntJava.ICallback()
+    private HidlClient.ICallback mAntCallback = new HidlClient.ICallback()
     {
         public synchronized void ANTRxMessage( byte[] message)
         {

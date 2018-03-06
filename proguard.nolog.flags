@@ -2,7 +2,7 @@
 #
 # ANT Stack
 #
-# Copyright 2011 Dynastream Innovations
+# Copyright 2018 Dynastream Innovations
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,8 +18,8 @@
 #
 ###############################################################################
 
-# Need to manually keep any entrance points that are only referenced by the manifest.
-# Currently this is our exported service and the boot completed receiver.
--keep class * extends android.app.service
--keep class * extends android.content.BroadcastReceiver
-
+# Strip out any verbose/debug logs.
+-assumenosideeffects class android.util.log {
+    public static int v(...);
+    public static int d(...);
+}

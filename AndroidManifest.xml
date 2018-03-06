@@ -16,8 +16,8 @@ limitations under the License.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.dsi.ant.server"
-    android:versionName="4.1.1"
-    android:versionCode="040101"
+    android:versionName="5.0.0_hidl_1"
+    android:versionCode="050000"
     android:sharedUserId="android.uid.system">
 
     <uses-sdk

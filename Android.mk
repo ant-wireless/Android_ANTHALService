@@ -16,7 +16,6 @@
 # limitations under the License.
 #
 
-ifneq ($(BOARD_ANT_WIRELESS_DEVICE),)
 LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
@@ -29,12 +28,17 @@ LOCAL_SRC_FILES := \
     src/com/dsi/ant/server/IAntHal.aidl \
     src/com/dsi/ant/server/IAntHalCallback.aidl
 
-LOCAL_REQUIRED_MODULES := libantradio
+LOCAL_STATIC_JAVA_LIBRARIES := \
+    com.dsi.ant-V1.0-java-static
+
 LOCAL_PROGUARD_FLAG_FILES := proguard.flags
 LOCAL_CERTIFICATE := platform
 LOCAL_MODULE_TAGS := optional
 LOCAL_PACKAGE_NAME := AntHalService
 
-include $(BUILD_PACKAGE)
+# Remove all verbose and debug logging when building user.
+ifeq ($(TARGET_BUILD_VARIANT),user)
+    LOCAL_PROGUARD_FLAG_FILES += proguard.nolog.flags
+endif
 
-endif # BOARD_ANT_WIRELESS_DEVICE defined
+include $(BUILD_PACKAGE)
