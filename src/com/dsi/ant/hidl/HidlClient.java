@@ -199,6 +199,7 @@ public final class HidlClient {
             // If already disabled there is nothing to do.
             if (mState == AntHalDefine.ANT_HAL_STATE_DISABLED) {
                 Log.d(TAG, "Ignoring disable(), already disabled.");
+                return;
             }
 
             updateState(AntHalDefine.ANT_HAL_STATE_DISABLING);
@@ -337,7 +338,12 @@ public final class HidlClient {
         while (diff > 0 && !mFlowGoReceived) {
             try {
                 // Wait takes a time in milliseconds
-                mFlowControlLock.wait(diff / (1000*1000));
+                long diff_ms = diff / (1000L * 1000L);
+                if (diff_ms > 0) {
+                    mFlowControlLock.wait(diff_ms);
+                } else {
+                    break;
+                }
             } catch (InterruptedException e) {
                 // Shouldn't be interrupted, but if it is just move the deadline to now.
                 deadline = System.nanoTime();
