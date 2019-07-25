@@ -124,11 +124,6 @@ public class AntService extends Service
         return false; // Set to true if require bluetooth on for ANT functionality
     }
 
-    public static boolean startService(Context context)
-    {
-        return ( null != context.startService(new Intent(IAntHal.class.getName())) );
-    }
-
     /**
      * Calls back the registered callback with the change to the new state
      * @param state the {@link AntHalDefine} state
@@ -634,10 +629,6 @@ public class AntService extends Service
                 binder = mHalBinder;
             }
         }
-
-        // As someone has started using us, make sure we run "forever" like we
-        // are a system service.
-        startService(this);
 
         return binder;
     }

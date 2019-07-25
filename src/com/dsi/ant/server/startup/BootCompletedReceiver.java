@@ -31,14 +31,15 @@ public class BootCompletedReceiver extends BroadcastReceiver
 {
     /** The debug log tag */
     public static final String TAG = "BootCompletedReceiver";
-    
+    private static final String ACTION_BOOT_COMPLETED = "android.intent.action.BOOT_COMPLETED";
     @Override
     public void onReceive(final Context context, final Intent intent) 
     {
-        // just make sure we are getting the right intent (better safe than sorry)
-        if(Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) 
+        String action = intent.getAction();
+        Intent serviceIntent = new Intent(context,AntService.class);
+        if (null != action && action.equals(ACTION_BOOT_COMPLETED))
         {
-            AntService.startService(context);
+            context.startService(serviceIntent);
         }
         else
         {
