@@ -17,7 +17,7 @@
 //
 
 android_app {
-    name: "AntHalService",
+    name: "AntHalService-Soong",
 
     //
     // ANT java system service
