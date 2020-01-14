@@ -33,11 +33,11 @@ android_app {
 
     optimize: {
         // Remove all verbose and debug logging when building release
-	proguard_flags_files: ["proguard.flags", "proguard.nolog.flags"], 
+        proguard_flags_files: ["proguard.flags", "proguard.nolog.flags"],
     },
 
     certificate: "platform",
 
     platform_apis: true,
-
+    system_ext_specific: true,
 }
