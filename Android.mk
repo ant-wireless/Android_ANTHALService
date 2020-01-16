@@ -34,6 +34,7 @@ LOCAL_PROGUARD_FLAG_FILES := proguard.flags
 LOCAL_CERTIFICATE := platform
 LOCAL_MODULE_TAGS := optional
 LOCAL_PACKAGE_NAME := AntHalService
+LOCAL_SYSTEM_EXT_MODULE := true
 
 include $(BUILD_PACKAGE)
 
