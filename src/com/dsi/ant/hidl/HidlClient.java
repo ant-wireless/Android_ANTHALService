@@ -208,6 +208,7 @@ public final class HidlClient {
                 if (status != 0) {
                     Log.w(TAG, "Failed to disable ANT: " + mHidl.translateStatus(status));
                 }
+                cleanupHidl();
             } catch (RemoteException e) {
                 Log.w(TAG, "Server died in disable", e);
                 handleServerDeath();
